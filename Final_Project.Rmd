@@ -1,0 +1,2422 @@
+---
+title: "Restaurant Sanitation Inspections Case Study"
+subtitle: "An analysis to uncover the __key factors__ driving __low sanitation scores__ for restaurants in Charlotte, North Carolina"
+author: "Morgan Heinly"
+date: "December 12, 2021"
+output:
+      
+    html_document:
+        code_folding: none
+        df_print: paged
+        highlight: tango
+        theme: flatly
+        number_sections: yes
+        toc: yes
+        toc_depth: 2
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = FALSE,
+                      warning = FALSE)
+
+
+```
+
+
+# Business Problem
+
+__Food establishments lack clear and concise guidance__ required to adequately prepare for sanitation inspections, leading to __poor sanitation scores__ from local health inspectors. Low scores can result in:
+
+- Corrosion of customer trust and reputational damage
+- Expensive fines and costly remediation efforts
+- Inability to operate due to permit revocation / non-issuance
+- High litigation costs if lawsuits are pursued by employees, government entities, or customers
+
+# Background
+
+## Inspection Authorities
+
+The Food and Drug Administration (FDA) provides guidance to approximately 75 state and territorial agencies and more than 3,000 local departments that assume primary responsibility for preventing food borne illnesses, issuing licenses, and inspecting establishments within the retail food industry.
+
+In the state of North Carolina, the Department of Health and Human Services (DHHS) is responsible for protecting the health, welfare, and economic interests of food consumers. The department has formalized its own food code manual and standardized framework (derived from the FDA’s 2017 food code) for assessing food establishments. The official N.C. food code manual can be found [here](https://ehs.ncpublichealth.com/faf/docs/foodprot/NC-FoodCodeManual-2021-FINAL.pdf).
+
+## Restaurant Inspections
+
+The DHHS evaluates restaurants by performing bi-annual (and sometimes unannounced) sanitation inspections to ensure compliance with standards outlined in North Carolina's code manual. Rules governing inspections, including grading system and public display requirements can be found [here](https://public.cdpehs.com/NCENVPBL/ESTABLISHMENT/ShowRestaurantRules.aspx).
+
+# Project Overview
+
+## Summary
+
+Restaurants (the primary category of food establishments) should strive to achieve high sanitation inspection scores from local authorities; but even more importantly, they must avoid low sanitation scores, which can have significant business implications.
+
+In many circumstances, restaurants must thoroughly review numerous compliance documents (including the ~240 page code manual) to adequately prepare for sanitation inspections. However, this can be a time-consuming and ambiguous process! Furthermore, restaurants may not know the severity of violation types and specific codes that are most important to comply with, leading to confusion when determining which code sections to prioritize for inspection readiness.
+
+## Purpose
+
+The objective of this analysis will be to extract and analyze publicly available inspection data to:
+
+1. Identify and highlight the driving factors causing lower sanitation scores
+2. Provide succinct guidance and recommendations for both new and existing restaurants to reference when preparing for their inspections
+
+## Scope
+
+- Restaurants located in Charlotte, NC (Mecklenburg Country)
+- Inspections range from Jan 2017-  Oct 2021
+
+## Data
+
+1. Source
+
+Data for reported restaurant inspection scores can typically be accessed through city data portals or government websites, which are authorized to publish such information.
+
+  _Inspection report data for Charlotte, NC can be accessed through Mecklenburg County’s government website at MECKNC.GOV and accessing CDP’s Inspection Management system_ [here](https://public.cdpehs.com/NCENVPBL/ESTABLISHMENT/ShowESTABLISHMENTTablePage.aspx?ESTTST_CTY=60)
+
+2. Collection Process
+
+Inspection reports were stored in a dynamic hierarchical table which used XHTML, Java Script, and embedded programmatic calls, which presented some challenges to extracting the data en masse.
+
+Due to this data storage complexity, an RPA tool (UiPath) was configured to:
+
+1.	Batch processes each restaurant within the inspection management system website
+2.	Extract tables for restaurant information, inspection data, and violation data for each record
+3.	Relate each entity table using unique identifiers captured and assigned by the RPA tool
+4.	Synthesize data and prepare for analysis using R Studio
+
+_For technical details on data extraction process, see Section 7.2 Appendix B_
+
+
+```{r Load Libraries, echo=FALSE, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(tidyr)
+library(tm)
+library(tidygraph)
+library(tidytext)
+library(tidyquant)
+library(skimr)
+library(rvest)
+library(readr)
+library(janitor)
+library(stringr)
+library(readxl)
+library(pdftools)
+#library(tidygeocoder)
+library(tmap)
+library(tmaptools)
+library(viridis)
+library(sf)
+library(leaflet)
+library(maps)
+library(mapview)
+library(leafpop)
+library(RColorBrewer)
+library(psych)
+library(qwraps2)
+library(knitr)
+library(gtsummary)
+library(htmltools)
+library(recipes)
+library(textrecipes)
+library(SnowballC)
+library(udpipe)
+library(textrank)
+library(wordcloud)
+library(wordcloud2)
+library(reshape2)
+library(tm)
+library(rlang)
+library(ggwordcloud)
+library(broom)
+library(ggrepel)
+library(RColorBrewer)
+library(png)
+library(gt)
+library(hexbin)
+library(summarytools)
+library(rmarkdown)
+library(spelling)
+
+```
+
+# Analysis
+
+## Tables and Records
+
+Included in our analysis:
+
+We have 3 tables: Restaurants, Inspections, and Violations. 
+
+Each restaurant is related to __one or many inspections__ and each inspection is related to __zero, one, or many violations__.
+
+
+- Total restaurants: 934
+- Total inspections: 8,992
+- Total violations:  45,471
+
+
+## Data Dictionary
+
+A data dictionary describes the tables in our analysis and the fields within each table, e.g., data types, descriptions, etc.
+
+
+```{r Load in the data, message=FALSE, warning=FALSE}
+
+options(qwraps2_markup = "markdown")
+options(scipen = 999)
+
+
+#### Extract and import rules governing North Carolina sanitation inspections
+
+violation_codes <- read_excel("clt_sanitation_codes.xlsx",sheet = "Sheet3", col_names = TRUE, trim_ws = TRUE) %>% clean_names()
+
+
+#### Extract raw data ----
+
+restaurants <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 1, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+inspections <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 2, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+violations <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 3, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+
+
+final_data_dictionary <- read_excel("DataDictionary_RestaurantInspections_final.xlsx", sheet = 1, col_names = TRUE, trim_ws = TRUE)
+
+
+
+```
+
+
+```{r Data Dictionary, echo=FALSE, out.width= "100%", fig.align= 'left'}
+
+
+final_data_dictionary %>%
+  rename('Table Name' = TableName) %>%
+  na.omit %>%
+  gt() %>%
+     tab_header(
+        title = "Data Dictionary") %>%
+     tab_options(
+    table.font.size = px(16L)
+    ) %>%
+    opt_align_table_header(align = "left")
+
+
+```
+
+
+```{r Descriptive statistics, message=FALSE, warning=FALSE,collapse=TRUE, fig.show= "hide", include= FALSE}
+
+restaurants %>% skimr::skim() 
+inspections %>% skimr::skim()
+violations %>% skimr::skim()
+
+```
+
+
+
+```{r Initial data clean up, message=FALSE, warning=FALSE}
+
+inspections <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date)) %>% filter(year >= 2017)
+
+
+
+violations <- violations %>%
+    mutate(demerits = ifelse(is.na(demerits), 0, demerits))
+
+restaurants <- restaurants %>%
+    filter(state == 'NC')
+
+
+violations <- violations %>%
+    mutate(demerits = ifelse(is.na(demerits), 0, demerits))
+
+restaurants <- restaurants %>%
+    filter(state == 'NC')
+
+#### Explore unique identifier performance by RPA bot
+#### We notice that there are some violation tables that did not render. Restaurants with inspection scores < 100 should always have at least 1 violation.
+#### For our final restaurant list, we'll only we'll only include restaurants with final inspection scores of 100 that TRULY don't have violations
+
+
+restaurants_no_violations <- restaurants %>%
+    inner_join((inspections %>% filter(inspection_score == 100))) %>%
+    anti_join(violations) %>% distinct(est_id, name, address, city, state, zip)
+
+
+
+violations_undocumented <- inspections %>%
+    filter(inspection_score < 100) %>%
+    anti_join(violations, by= c('est_id', 'inspection_id')) %>%
+    count(est_id, sort = TRUE) %>%
+    inner_join(restaurants)
+
+restaurants_final <- restaurants %>%
+    semi_join(inspections) %>%
+    semi_join(violations) %>%
+    rbind(restaurants_no_violations) %>%
+    anti_join(violations_undocumented) %>%
+    distinct(.)
+
+
+desc_1 <- describe(restaurants_final) %>% rownames_to_column(var = "column") %>%
+  tibble() %>%
+  select(column,n, mean, sd,median,min,max,range) %>%
+    gt() %>%
+     tab_header(
+        title = "Restaurants",
+        subtitle = "Summary Statistics") %>%
+    fmt_number(columns = c(3:5),decimals = 2) %>%
+     tab_options(
+    table.font.size = px(14L)
+    ) %>%
+    opt_align_table_header(align = "left")
+    
+    
+    
+desc_2 <- describe(inspections,omit = T) %>% rownames_to_column(var = "column") %>%
+  tibble() %>% filter(column != 'year') %>%
+  select(column,n, mean, sd,median,min,max,range) %>%
+    gt() %>%
+     tab_header(
+        title = "Inspections",
+        subtitle = "Summary Statistics") %>%
+    fmt_number(columns = c(3:5),decimals = 2) %>%
+     tab_options(
+    table.font.size = px(17L)
+    ) %>%
+    opt_align_table_header(align = "left")
+
+
+
+desc_3 <- describe(violations,omit = T) %>% rownames_to_column(var = "column") %>%
+  tibble() %>%
+  select(column,n, mean, sd,median,min,max,range) %>%
+    gt() %>%
+     tab_header(
+        title = "Inspections",
+        subtitle = "Summary Statistics") %>%
+    fmt_number(columns = c(3:5),decimals = 2) %>%
+     tab_options(
+    table.font.size = px(17L)
+    ) %>%
+    opt_align_table_header(align = "left")
+
+
+```
+
+
+## Data View & Summary Statistics   _(optional section)_
+
+TABLE 1: RESTAURANTS
+
+```{r tablsum1, fig.align='left',out.width= "100%"}
+
+paged_table(head(restaurants_final,n = 100), options = list(rows.print = 10))
+
+```
+
+
+
+```{r Summary Statistics 1, fig.align= 'left',out.width= "100%"}
+
+skim(restaurants_final) %>%
+print(include_summary = TRUE,
+  n = Inf,
+  width = Inf,
+  n_extra = NULL,
+  strip_metadata = getOption("skimr_strip_metadata", FALSE),
+  rule_width = base::options()$width,
+  summary_rule_width = 40)
+
+
+```
+
+TABLE 2: INSPECTIONS  
+
+```{r tablsum2, fig.align='left',out.width= "100%"}
+
+paged_table(head((inspections %>% select(-c(7,8))),n = 100), options = list(rows.print = 10))
+
+```
+
+
+```{r Summary Statistics2, fig.align= 'left',out.width= "100%"}
+
+
+skim((inspections %>% select(-c(7,8)))) %>%
+print(include_summary = TRUE,
+  n = Inf,
+  width = Inf,
+  n_extra = NULL,
+  strip_metadata = getOption("skimr_strip_metadata", FALSE),
+  rule_width = base::options()$width,
+  summary_rule_width = 40)
+
+
+```
+
+TABLE 3: VIOLATIONS  
+
+```{r tablsum3, fig.align='left',out.width= "100%"}
+
+paged_table(head(violations,n = 100), options = list(rows.print = 10))
+
+```
+
+
+```{r Summary Statistics, fig.align= 'left',out.width= "100%"}
+
+skim(violations) %>%
+print(include_summary = TRUE,
+  n = Inf,
+  width = Inf,
+  n_extra = NULL,
+  strip_metadata = getOption("skimr_strip_metadata", FALSE),
+  rule_width = base::options()$width,
+  summary_rule_width = 40)
+
+
+```
+
+## Data Exploration
+
+
+Before diving into the data, let's quickly take a moment to review the grading scale and scoring methodology.
+
+Grading Scale:
+
+- Inspection scores directly correspond to inspection Grades
+- Grades can either be __A__, __B__, or __C__
+- Inspection scores range from 70 (worst) - 100 (best)
+- __A:__  100 - 90    __B:__  89 - 80    __C:__  79 - 70 
+
+
+Scoring System:
+
+- All restaurants start with an inspection score of __100__
+- For each violation found by the inspector, a __demerit value__ is assigned to that violation
+- Demerits can be: __0__, __0.5__, __1__, __1.5__, __2__, __3__, or __4__
+- Final sanitation inspection score is simply:  __100__  -  __total number of demerits__ received during the inspection
+
+
+### Map View
+
+Let's take a quick look at some restaurants in Charlotte.
+
+_If viewed in HTML file, hover over points to see restaurant names or click any of the points to see minimum inspections scores_
+
+
+This map represents less than half the restaurants in Charlotte; but as depicted below, most are doing fairly well in terms of sanitation inspection ratings. some restaurants such as __Deli La Union__, __Old Pineville Premium Pub__, and __Santa Fe Mexican Restaurant__ are clearly establishments to avoid.
+
+_note: some restaurants in this analysis are not represented here due to erroneous addresses. Valid addresses were required to obtain longitude and latitude values via the Google API call._
+
+
+
+```{r Build a map, echo=FALSE, message=FALSE, out.width = "100%",warning=FALSE}
+
+#### Build a map ----
+#### Construct and map our data by first converting restaurant addresses to latitude and longitude points
+
+
+#save the locations file
+
+locations <- readRDS(file = "locations.Rda")
+
+pal <- RColorBrewer::brewer.pal(9, "Reds")
+
+
+
+#### Plot the restaurants with minimum inspection rating
+
+min_inspection_ratings <- inspections %>%
+    group_by(est_id) %>%
+    summarize(min_score = min(inspection_score))
+
+
+map <- mapview(
+    (locations %>% inner_join(min_inspection_ratings)),
+    xcol = "longitude",
+    ycol = "latitude",
+    crs = 4269,
+    grid = FALSE,
+    zcol = "min_score",
+    col.regions = c("red1","orangered1","darkorange2","yellow1","palegreen1","palegreen4"),
+    layer.name = "Minimum Inspection Scores",
+    label = "name",
+    map.types = "CartoDB.DarkMatter")
+
+mapviewOptions(georaster = FALSE, fgb = FALSE)
+
+mapview(
+    (locations %>% inner_join(min_inspection_ratings)),
+    xcol = "longitude",
+    ycol = "latitude",
+    
+    crs = 4269,
+    grid = FALSE,
+    zcol = "min_score",
+    col.regions = c("red1","orangered1","darkorange2","yellow1","palegreen1","palegreen4"),
+    layer.name = "Minimum Inspection Scores",
+    label = "name",
+    map.types = "CartoDB.DarkMatter")@map
+
+```
+
+
+
+
+
+```{r Tables, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+set.seed(123)
+
+
+T1 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    mutate(year = as.character(year)) %>%
+    select(inspection_grade,year) %>%
+    tbl_summary(by = year, label = inspection_grade ~ "Inspection Grade") %>%
+    modify_caption("Inspection Grades by Year") %>%
+    bold_labels()
+
+
+
+T2 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    select(inspection_grade,month) %>%
+    tbl_summary(by = month, label = inspection_grade ~ "Inspection Grade") %>%
+    modify_caption("Inspection Grades by Month") %>%
+    bold_labels()
+
+
+T3 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    select(inspection_score) %>%
+    tbl_summary(
+        
+        type = all_continuous() ~ "continuous2",
+        statistic = all_continuous() ~ c("{N_nonmiss}",
+                                         "{mean} ({sd})",
+                                         "{median} ({p25}, {p75})",
+                                         "{min}, {max}"),
+        missing = "no"
+    ) %>%
+    italicize_levels() %>%
+    modify_caption("Inspection Scores") %>%
+    bold_labels()
+
+T4 <- violations %>% select(violation_item,demerits,corrected_during_inspection,repeat_violation,verification_required) %>%
+    mutate(violation_item = as.factor(violation_item)) %>%
+    tbl_summary() %>%
+    modify_caption("Descriptive Statistics for Violations") %>%
+    bold_labels()
+
+
+```
+
+
+
+
+### Exploratory Data Analysis (EDA)
+
+Let's start by visualizing the relationship between inspection scores and number of violations
+
+The below chart shows a scatter plot with splines - as expected, there is clearly a strong negative relationship between number of violations and inspection scores; but these variables are not 100% correlated because violation demerits can range from 0 to 4.  
+
+
+
+
+```{r Initial Data Exploration, echo=FALSE, message=FALSE, warning=FALSE, out.width="100%", paged.print=FALSE}
+
+#### Violation counts are related to scores
+
+P1 <- violations %>%
+    select(-est_id) %>%
+    inner_join((inspections %>% select(-est_id))) %>%
+    group_by(inspection_id) %>%
+    summarise(score = mean(inspection_score),
+              violation_count = n()) %>%
+    ggplot(aes(violation_count, score)) +
+    geom_jitter(alpha = .2, color = "grey50") +
+    geom_smooth(size = 1.5, colour = "#2c3e50") +
+    theme_minimal() +
+    labs(title = "Inspection scores vs Violation count",
+         x = "violation count")
+
+#### We know that scores are a direct function of demerits, so let's see if response types have an impact
+
+
+P2<- violations %>%
+    select(demerits,corrected_during_inspection,repeat_violation,verification_required) %>%
+    pivot_longer(corrected_during_inspection:verification_required) %>%
+    mutate(name = str_replace_all(name,"_"," ") %>% str_to_title()) %>%
+    mutate_if(is.character,factor) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    ggplot(aes(demerits, fill = value)) +
+    geom_bar(position = "fill") +
+    scale_fill_manual(values = c("gray90","#2c3e50")) +
+    scale_y_continuous(labels = scales::percent,
+                       n.breaks = 3,expand = c(.02,.02)) +
+    
+    coord_flip() +
+    theme_minimal() +
+    theme(strip.text.x = element_text(size = 10,face = "bold"),
+          axis.text.y = element_text(size = 12),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = c(.04,.9999),legend.direction = "horizontal")+
+    
+    guides(fill = guide_legend(reverse = TRUE)) +
+    facet_wrap(~name, scales = "free_x") +
+    labs(
+         x = "demerits",
+         y = "proportion",
+         fill = NULL)
+
+
+
+#### Does location plays a role in restaurant inspection scores?
+
+P3 <- locations %>%
+    inner_join(min_inspection_ratings) %>%
+    ggplot(aes(longitude, latitude, z = min_score)) +
+    stat_summary_hex(color = "grey", alpha = .8, bins = 15) +
+    scale_color_tq() +
+    labs(fill = "Avg. Minimum Score") +
+    theme_minimal() +
+    coord_fixed() +
+    labs(title = "Average minimum inspection scores: longitude vs latitude")
+
+
+
+#### Let's take a look at violation items to see if there are differences in avg demerits per violation
+
+P4 <- violations %>%
+    arrange(violation_item) %>%
+    mutate(number = as.character(violation_item)) %>%
+    ggplot(aes(factor(violation_item,ordered = TRUE), demerits, color = "identity")) +
+    geom_jitter(width = .2, alpha= .1) +
+    coord_flip()+
+    scale_color_tq() +
+    theme_minimal() +
+    theme(legend.position = "none") +
+    labs(title = "Demerits by violation item",
+         subtitle = "items x are the largest",
+         x = "violation item")
+
+
+#### Do certain inspectors grade more harshly than others
+
+top_inspectors <- inspections %>%
+    group_by(inspector_id) %>%
+    summarize(avg_ins_rating = mean(inspection_score),
+              count = n()) %>%
+    ungroup() %>%
+    slice_max(order_by = count,n = 30) %>%
+    arrange(avg_ins_rating) %>% pull(inspector_id)
+
+#### plot the inspector IDs and rank by median rating
+
+P5 <- inspections %>%
+    filter(inspector_id %in% top_inspectors) %>%
+    mutate(inspector_id = as.factor(inspector_id)) %>%
+    ggplot(aes(fct_reorder(inspector_id,inspection_score,.desc = FALSE), inspection_score)) +
+    coord_flip() +
+    scale_x_discrete()+
+    geom_boxplot(fill = "#2c3e50", alpha = .6) +
+    labs(y = NULL,
+         x = "inspector ID",
+         y = "median sanitation score",
+         title = "Inspectors ranked by median sanitation score",
+         subtitle = "The top 30 Inspectors (most inspections performed) ranked by median score") +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+
+```
+
+
+
+
+```{r Spline Scatter, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+png(file="P1.png",width=2700,height=1800,res=400)
+P1
+dev.off()
+
+```
+
+```{r Spline ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P1.png")
+
+```
+
+
+
+
+
+
+```{r Data Wrangling }
+
+pattern_num <- "(\\d+)-(\\d+).(\\d+)"
+pattern_obs <- "(observed|Observed).+"
+
+
+#### final violations table used for NLP analysis
+violations_NLP <- violations %>%
+    mutate(violation_number = str_extract(inspector_comments,pattern = pattern_num) %>% str_trim(),
+           observations = str_extract(inspector_comments,pattern = pattern_obs) %>% str_trim() %>% str_remove_all("(observed|Observed|-P)")) %>%
+    filter(!is.na(violation_number)) %>%
+    filter(!is.na(observations)) %>% select(-inspector_comments)
+
+
+words_cleaned <- violations_NLP %>%
+    unnest_tokens(word, observations) %>%
+    anti_join(stop_words) %>%
+    mutate(word = str_extract(word, "[a-z']+")) %>%
+    filter(!is.na(word)) %>%
+    # remove abbreviations and
+    filter(str_length(word) > 3) %>%
+    # remove punctuation
+    mutate(word = str_remove_all(word, pattern = "[[:punct:]]"))
+
+
+```
+
+
+```{r Data Exploration Part 2}
+
+P6 <- words_cleaned %>%
+    count(word, sort = TRUE) %>%
+    slice_max(n = 20, order_by = n) %>%
+    mutate(word = reorder(word,n)) %>%
+    ggplot(aes(n, word)) +
+    geom_col(fill = "#2C3E50") +
+    theme_minimal() +
+    scale_x_continuous(expand = c(.01,0),labels = scales::comma) +
+    theme(strip.text.x = element_text(size = 10),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    labs(x = "word count",
+         y = NULL,
+         title = "Most frequently used words in violation reports")
+
+#### Let's jump right into TF-IDF to determine words specific to each categories
+
+### split by very high scores and very low scores
+set.seed(123)
+
+P7 <- words_cleaned %>%
+    inner_join(inspections) %>%
+    mutate(performance = case_when(inspection_score > 99 ~ "very high",
+                                   inspection_score > 84 ~ "mediocre",
+                                   TRUE ~ "very low")) %>%
+    filter(performance != "mediocre") %>%
+    count(performance, word, sort = TRUE) %>%
+    ungroup() %>%
+    bind_tf_idf(word,performance, n) %>%
+    arrange(-tf_idf) %>%
+    group_by(performance) %>% mutate(performance = factor(performance)) %>%
+    slice_max(n = 20,with_ties = FALSE, order_by = tf_idf) %>%
+    mutate(word = factor(word, levels = rev(unique(word)))) %>%
+    ggplot(aes(word,tf_idf, fill = performance)) +
+    geom_col(alpha = .8,show.legend = FALSE) +
+    scale_fill_tq() +
+    labs(title = "Words most associated with very high scores vs. very low scores",
+         x = NULL,
+         y = "tf-idf") +
+    facet_wrap(~performance, scales = "free") +
+    coord_flip() +
+    theme_minimal()  +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+violations_model_df <- violations_NLP %>%
+    mutate(violation_number = str_sub(violation_number,1,5)) %>%
+    inner_join(violation_codes,by = c("violation_number" = "code_subtitle"))
+
+high_demerits <- violations_NLP %>%
+     filter(demerits > 2) %>%
+     mutate(observations = str_to_lower(observations))
+ 
+ 
+low_demerits <- violations_NLP %>%
+     filter(demerits == 0) %>%
+     sample_n(size = 2000) %>%
+     mutate(observations = str_to_lower(observations))
+
+P9 <- violations_model_df %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    count(chapter_description,demerits,sort = TRUE) %>%
+    ungroup() %>%
+    mutate(chapter_description = reorder(chapter_description,n)) %>%
+    ggplot(aes(chapter_description, n, fill = demerits)) +
+    scale_fill_tq() +
+    geom_col() +
+    theme_minimal() +
+    coord_flip()
+
+
+#### Clean up the description data
+
+lowcounts <- violations %>%
+    group_by(inspection_id) %>%
+    count(inspection_id) %>% filter(n <4)
+
+#### dummy table for additional features
+dummy_table <- violations_model_df %>%
+    transmute(inspection_id,repeat_violation = ifelse(repeat_violation == 'Yes',1,0),
+              corrected_during_inspection = ifelse(corrected_during_inspection == 'Yes',1,0),
+              verification_required = ifelse(verification_required == 'Yes',1,0),
+              demerit_0 = ifelse(demerits == 0, 1,0),
+              demerit_.5 = ifelse(demerits == 0.5, 1,0),
+              demerit_1 = ifelse(demerits == 1, 1,0),
+              demerit_1.5 = ifelse(demerits == 1.5, 1,0),
+              demerit_2 = ifelse(demerits == 2, 1,0),
+              demerit_3 = ifelse(demerits == 3, 1,0),
+              demerit_4 = ifelse(demerits == 4, 1,0)) %>%
+    group_by(inspection_id) %>%
+    mutate(count = n()) %>%
+    mutate(
+        across(c(2:10),
+               .fns = ~./count)) %>% ungroup() %>%
+    group_by(inspection_id) %>%
+    summarise_at(1:10,sum)
+#### we have to add one more catch in here for violations that have all repeats inflating the counts and remove low counts
+dummy_table <- dummy_table %>%
+    mutate(repeat_violation = ifelse(repeat_violation > 1, 1,repeat_violation)) %>%
+    anti_join(lowcounts)
+
+
+```
+
+
+
+```{r NLP }
+
+
+violations_summary_tbl <- violations_model_df %>%
+    mutate(violation_description = str_to_lower(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+    mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,"nonfoodcontact","nonfood contact")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"raw or undercooked foods","raw undercooked foods")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"management and food employee knowledge and conditional employee responsibilities and reporting",
+                                                   "management food and conditional employee knowledge responsibilities and reporting")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"no bare hand contact with rte foods or pre approved alternate procedure properly followed",
+                                                   "no bare hand contact with rte foods or a preapproved alternate properly followed")) %>%
+    
+    
+    mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+    mutate(demerits = factor(as.character(demerits)))%>%
+    group_by(violation_description, demerits) %>%
+    summarise(n = n()) %>%
+    mutate(prop = n/ sum(n)) %>%
+    select(-prop) %>%
+    pivot_wider(names_from = demerits, values_from = n,values_fill = 0) %>%
+    ungroup() %>%
+    mutate("desc_total" = rowSums((.[,2:8]), na.rm = TRUE)) %>% filter(desc_total > 6) %>%
+    mutate("total" = sum(desc_total),
+           "total_perc" = desc_total / total) %>%
+    pivot_longer(2:8) %>%
+    mutate(desc_perc = value / desc_total)
+
+
+
+#### let's do some proportional analysis to see how two groups differ
+
+
+P10 <- inspections %>%
+    inner_join(violations,by = c("inspection_id" = "inspection_id")) %>%
+    mutate(high_score = ifelse(inspection_score < 90, "score < 90", "score >= 90")) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    group_by(high_score, demerits) %>%
+    summarize(count = n()) %>%
+    mutate(perc = sum(count) / count) %>%
+    ggplot(aes(high_score,count, fill = demerits)) +
+    geom_col(position = "fill",alpha = .8) +
+    coord_flip() +
+    scale_fill_brewer(palette = 'Reds') +
+    scale_y_continuous(labels=scales::percent) +
+    #scale_x_continuous(labels=scales::percent) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    labs(
+        subtitle = "Higher demerits (2,3,4) make up much higher violation proportions for low scores",
+         x = NULL,
+         y = NULL,
+    )
+
+
+#### to dive in a bit deeper, let's take the top culprits for higher demerits (2,3,4) and highlight them
+
+high_demerit_culprits <- violations_summary_tbl %>% filter(name > 1.5) %>%
+    mutate(rank = total_perc * desc_perc) %>%
+    arrange(-rank) %>%
+    head(7) %>%
+    bind_rows(violations_summary_tbl %>% filter(violation_description == "hands clean and properly washed" & name == 4 ))
+
+low_demerit_culptrits <- violations_summary_tbl %>% filter(name > 1.5) %>%
+    filter(!violation_description %in% high_demerit_culprits$violation_description) %>%
+    filter(name %in% c(2,3,4)) %>%
+    filter(desc_perc > 0.04)
+
+
+#### plot the results and highlight top 10 culprits
+
+
+P11 <- violations_summary_tbl %>%
+    filter(name %in% c(2,3,4)) %>%
+    filter(desc_perc > 0.04) %>%
+    ggplot(aes(total_perc, desc_perc, shape = name, color = "gray80")) +
+    geom_point(data=low_demerit_culptrits,
+               aes(x=total_perc,y=desc_perc),
+               color= "gray80",
+               size = 1.5,alpha = .95, size = 2) +
+    geom_point(data=high_demerit_culprits,
+               aes(x=total_perc,y=desc_perc),
+               color= "indianred",
+               size = 3.1) +
+    geom_text_repel(data = low_demerit_culptrits,
+                    aes(label = violation_description),
+                    color = "gray80",
+                    size = 2.5,alpha = .95) +
+    geom_text_repel(data=high_demerit_culprits,
+                    aes(label = violation_description),nudge_y = -.015,
+                    size = 3.7,
+                    color= "indianred") +
+    
+    scale_color_tq() +
+    scale_y_continuous(limits = c(0,1),labels=scales::percent) +
+    scale_x_continuous(limits = c(0, .08),labels=scales::percent) +
+    labs(title = "Violation descriptions with highest demerits",
+         x = "proportion of total violation descriptions",
+         y = "proportion of demerit types",
+         shape  = "demerits",
+         color = NULL) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+
+
+
+
+
+#### check out specific violations and plot them
+
+violations_subcode_tbl <- violations_model_df %>%
+    mutate(violation_description = str_to_lower(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+    mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,"nonfoodcontact","nonfood contact")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"raw or undercooked foods","raw undercooked foods")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"management and food employee knowledge and conditional employee responsibilities and reporting",
+                                                   "management food and conditional employee knowledge responsibilities and reporting")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"no bare hand contact with rte foods or pre approved alternate procedure properly followed",
+                                                   "no bare hand contact with rte foods or a preapproved alternate properly followed")) %>%
+    
+    
+    mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    filter(violation_description %in% high_demerit_culprits$violation_description) %>%
+    mutate(demerits = case_when(demerits == '4'~ 4,
+                                demerits == '3'~ 3,
+                                demerits == '2'~ 2,
+                                demerits == '1'~ 1,
+                                demerits == '1.5'~ 1.5,
+                                demerits == '.5'~ .5,
+                                TRUE ~ 0)) %>%
+    group_by(chapter_description, violation_number) %>%
+    summarise(n = n(),
+              mean = round(mean(demerits),2),
+              sdev = sd(demerits),
+              lower = mean - (1*sdev),
+              upper = mean +(1*sdev)) %>%
+    filter(n > 50) %>%
+    filter(mean > .7)
+
+P12 <- violations_subcode_tbl %>%
+    ggplot(aes(reorder(violation_number,mean),mean, color = chapter_description, ymin = lower, ymax = upper)) +
+    geom_pointrange(size = 1,alpha = .8) + coord_flip() +
+    labs(x = "violation code", y = "average demerits",
+         color = "Chapter Description") +
+    geom_hline(yintercept = 1,linetype = 2,size = 1.2, color = "gray80") +
+    geom_text(aes(label = str_glue("N: {scales::comma(n)}
+                                 Avg: {mean}")), size = 2.5,nudge_x = .28, nudge_y = .18) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_color_tq() +
+    labs(title = "Violation codes with highest demerits",
+         subtitle = "Prioritize the following codes for inspection readiness")
+
+
+
+```
+
+
+
+```{r Final Google model and Word cloud}
+
+# import model with Google data frame
+
+stats3 <- readRDS(file = "google_model_df.Rda")
+
+
+set.seed(123)
+
+P13 <- ggplot(stats3,
+             aes(label = keyword,
+                 size = freq)) +
+    geom_text_wordcloud_area(color = "indianred") +
+    scale_size_area(max_size = 40) +
+    theme_minimal()
+
+
+
+```
+
+
+
+
+```{r Final Reference Tables}
+
+severe_violations_tbl_reference <- violation_codes %>%
+    filter(code_subtitle %in% violations_subcode_tbl$violation_number)
+
+specific_violations <- violations%>%
+    mutate(long_number = str_extract(inspector_comments,pattern = pattern_num) %>% str_trim()) %>%
+    mutate(short_number = str_sub(long_number,1,5)) %>%
+    filter(short_number %in% severe_violations_tbl_reference$code_subtitle) %>%
+    group_by(short_number,long_number) %>%
+    summarize(n = n(),
+              mean = mean(demerits)) %>%
+    arrange(-mean) %>%
+    filter(n >= 50) %>% filter(mean >1) %>%
+    arrange(short_number,long_number)
+
+final_reference_tbl <- severe_violations_tbl_reference %>%
+    inner_join(specific_violations, by = c("code_subtitle" ="short_number")) %>% select(-n) %>% select(-mean) %>%
+    head(12)
+
+
+#### find the sub code descriptions and bind to reference table
+
+subcode_desc <- tibble(subcode_descripton =
+                           c("ASSIGNMENT", "DEMONSTRATION", "CERTIFIED FOOD PROTECTION MANAGER",
+                             "CLEANING PROCEDURE", "WHEN TO WASH","PACKAGED AND UNPACKAGED FOOD",
+                             "GLOVES - USE LIMITATION","COOLING","TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD",
+                             "READY TO EAT TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD: DATE MARKING",
+                             "READY TO EAT TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD: DISPOSITION",
+                             "EQUIPMENT, FOOD CONTACT SURFACES, NONFOOD CONTACT, AND UTENSILS"))
+
+
+final_reference_tbl <- final_reference_tbl %>%
+    rename("subcode" = long_number) %>%
+    bind_cols(subcode_desc) %>%
+    mutate(sub_chapter = ifelse(str_detect(sub_chapter,'4-5'),'4-6',sub_chapter)) %>%
+    mutate(sub_chapter_description = ifelse(str_detect(sub_chapter_description,'MAINTENANCE AND OPERATION'),'CLEANING OF EQUIPMENT AND UTENSILS',sub_chapter_description))%>%
+    mutate(code_subtitle = ifelse(str_detect(code_subtitle,'4-501'),'4-601',code_subtitle)) %>%
+    mutate(code_description = ifelse(str_detect(code_description,'EQUIPMENT'),'OBJECTIVE',code_description)) %>%
+    mutate(subcode = ifelse(str_detect(subcode,'4-501.112'),'4-601.11',subcode))
+
+
+```
+
+
+## Feature Selection
+
+### Demerit Analysis
+
+
+Considering the formula for inspection scores covered in section 4.4, number of demerits for each inspection will be our key focus! As a starting point, there are 3 fields in the violations table that seem like good candidates for investigation.
+
+
+  1. Repeat Violation: Yes/ No
+  2. Corrected During Inspection: Yes/ No
+  3. Verification Required: Yes/ No
+
+Let's see if these contain any useful information by analyzing proportions of Yes vs. No for demerit type  
+
+
+
+```{r G2, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+png(file="P2.png",width=3700,height=2400,res=300)
+P2
+dev.off()
+
+```
+
+
+```{r G2 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P2.png")
+
+```
+
+
+An important takeaway here is: violations with __3__ or __4__ demerits are typically __repeat violations__ and __must be corrected during the inspection.__
+
+
+Next, we'll take a look at how demerit types impact low scores vs. high scores. We'll use 90 as an initial threshold for low vs. high to keep the data balanced.
+
+
+
+
+
+```{r G5, out.width= "100%",message=FALSE, warning=FALSE,results='hide'}
+
+png(file="P10.png",width=2200,height=1600,res=300)
+P10
+dev.off()
+
+```
+
+
+```{r G5 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P10.png")
+
+```
+
+
+The chart above tells us something interesting about demerit types:
+
+- While violation counts are obviously important, the severity of violations matter significantly
+- __High demerits__ make up much higher proportions for __lower scores__
+
+ _note: while 90 was determine as an initial threshold, more extreme values were sampled for higher and lower scores. Results were the same._  
+  
+
+Now we have a bit more direction for the remainder of our analysis!  
+
+
+### Violation Descriptions
+
+
+The violation descriptions (within the violations table) is rich in content and could be useful for the following reasons:
+
+1. The descriptions are short but informative text fields that provide a bit more detail than single values
+2. After significant data clean up, only ~ 50 unique descriptions remained, which limited noise in the data
+
+
+The points in <span style="color: red;">red</span> represent top descriptions contributing to low scores. Shapes denote number of demerits
+
+
+Note: _hands clean and properly washed_ is duplicated because it was the only description containing 4 demerits
+
+
+
+
+
+```{r G6, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+png(file="P11.png",width=3300,height=2400,res=300)
+P11
+dev.off()
+
+```
+
+
+
+```{r G6 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P11.png")
+
+```
+
+
+
+
+
+__What is known up to this point?__
+
+1. Higher demerits are typically repeat violations and associated with lower inspection scores
+2. Restaurants with low inspection scores typically have more violations and high demerits per violation
+3. Certain violation descriptions are associated with lower scores. e.g., hands clean and properly washed, food separated and protected, proper date marking, and proper cold holding temperatures 
+
+
+It's a good starting point, but how can we better understand what inspectors are saying about each violation? This information can be found in the __inspector comments__.
+
+
+## Natural Language Processing (NLP)
+
+
+NLP can be a useful tool in when dealing with text data. In this case, the goal is to summarize bits of text that are most associated with lower scores (without having to read thousands of comments). 
+
+### TF-IDF 
+
+
+TF-IDF is a relatively simple, but sometimes powerful technique for understanding words associated with one document vs. another.
+
+Before any NLP can be performed, text data must be be pre-processed, cleaned and normalized. See the full code base in the appendix for more on how this was performed.
+
+__A brief introduction to TF-IDF__
+
+- TF-IDF defines importance of a term by taking into consideration the importance of that term in a single document, and scaling it by its importance across all documents.
+- Exact formula can be found in _Appendix A_
+- Number of words (ngrams) typically range from 1 to 4. For this analysis we'll just use one for the preliminary model. 
+
+
+
+```{r G4, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+png(file="P7.png",width=3000,height=1600,res=300)
+P7
+dev.off()
+
+
+```
+
+
+
+
+
+```{r G4 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P7.png")
+
+```
+
+
+_The actual TF-IDF value is an arbitrary number and does not represent a probability or any statistical metric; rather, it is only used as a benchmark for comparison._
+
+
+
+
+At first, the results may look a bit surprising and perhaps nebulous. 
+
+- __diarrhea__, __protocols__, and __accumulation__ are 3 single words most specific to higher inspection scores
+- __ready__, __multiple__, and __mark__ are more associated with lower inspection scores
+
+
+However, when we actually read the inspector comments, the results do make sense! For example:
+
+- __vomit__ and __protocols__ are used to describe the restaurant's failure to establish vomit clean-up protocols. Same with Diarrhea and most others found by TF-IDF. In general, these are insignificant violations.
+
+- __Ready__ is used with many situations to describe consumption ready food, __mark__ describes date marking violations and most others describe food preparation and storage. As seen earlier during the data exploration phase, these are usually more serious violations.
+
+
+These findings confirm much of what we've discovered earlier in the analysis, but more information is needed.  
+
+
+
+### Text Summary Modeling:
+
+Since the goal is to summarize text for lower sanitation scores, Google's Page Rank Model was used to extract and understand important text from the inspector comments field. Details on the math behind this model are outside the scope of this analysis. If interested, See [this](https://ipsen.math.ncsu.edu/ps/slides_man.pdf) link for more details.
+
+
+Model output is depicted in the word cloud below. Phrases with larger font size are most relevant in lower scores.
+
+
+
+```{r G8, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+png(file="P13.png",width=4000,height=3000,res=300)
+P13
+dev.off()
+
+```
+
+
+```{r G8 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+
+knitr::include_graphics("P13.png")
+
+```
+
+
+Some key phrases (in inspector comments) associated with lower scores
+
+1. wash hand
+2. walk-in cooler
+3. date Mark
+4. TCS food item
+5. repeat violation
+6. certified food protection manager  
+
+
+The word cloud and TF-IDF models certainly give us an idea of what inspectors are saying about underperforming restaurants in Charlotte; However, the most important component is still missing - restaurants need to know how these findings relate to critical violation codes and subcodes within North Carolina's food code manual, which will be the focus of our final section.
+
+
+
+
+## Violation Codes
+
+
+We know that lower sanitation scores (especially scores less than 80) have multiple demerits greater than 1.5 We also confirmed that words and phrases used in inspector comments are highly correlated with higher level demerits (2,3,4). Put simply: restaurants need to avoid violations associated with these demerits!
+
+The following graph shows the __top 10 most critical violation codes__ i.e., codes that contribute most to higher demerits.
+
+
+
+
+```{r G7, out.width= "100%",message=FALSE, warning=FALSE, results='hide'}
+
+
+png(file="P12.png",width=3400,height=2000,res=300)
+P12
+dev.off()
+
+
+```
+
+
+```{r G7 ex, out.width= "100%",message=FALSE, warning=FALSE}
+
+
+knitr::include_graphics("P12.png")
+
+
+```
+
+
+
+## Final Reference Table
+
+Lastly, we'll go one step further by taking these violation codes and finding the corresponding __subcodes__ , which restaurants must comply with in order to avoid higher demerits, and ultimately, low inspection scores.
+
+
+
+```{r Table Output, out.width="100%",message=FALSE, warning=FALSE}
+
+
+
+FT <- final_reference_tbl %>%
+  rename("Sub Chapter" = sub_chapter,
+         "Sub Chapter Description" = sub_chapter_description,
+         "Violation Code" = code_subtitle,
+         "Violation Code Description" = code_description,
+         "Violation Sub Code" = subcode,
+         "Violation Sub Code Description" = subcode_descripton) %>%
+  
+  unite(Chapter,c(chapter,chapter_description),sep = ":  ") %>%
+  unite('Sub Chapter',c('Sub Chapter','Sub Chapter Description'),sep = ": ") %>%
+  unite('Violation Code',c('Violation Code','Violation Code Description'),sep = ": ") %>%
+  unite('Violation Sub-Code',c('Violation Sub Code','Violation Sub Code Description'),sep = ": ") %>%
+  mutate(Chapter = str_c('CHAPTER ',Chapter))
+
+  
+FT %>%  gt(groupname_col = 'Chapter',
+           rowname_col = 'Sub Chapter') %>%
+  
+    tab_header(
+    title = md("**Severe Violations Table**"),
+    subtitle = md("Prioritize these violation codes for inspection readiness")
+  ) %>%
+
+  
+  tab_options(
+    column_labels.border.top.width = px(3),
+    data_row.padding = px(3),
+    source_notes.font.size = 10,
+    heading.align = "left",
+    #Adjust grouped rows to make them stand out
+    row_group.font.size = px(13)) %>%
+  
+      tab_options(
+        table.font.size = px(12L),
+         data_row.padding = px(10)) %>%
+    tab_style(
+    style = list(
+      cell_text(weight = "bold",
+                size = "small")
+    ),
+    locations = cells_column_labels(everything())
+  ) %>%  
+  
+    tab_style(
+    style = list(
+      cell_fill("#18BC9C"),
+      cell_text(color = "white", weight = "bold")
+      ),
+    locations = cells_row_groups(1)) %>%
+
+    tab_style(
+    style = list(
+      cell_fill("#E31A1C"),
+      cell_text(color = "white", weight = "bold")
+      ),
+    locations = cells_row_groups(2)) %>%
+  
+     tab_style(
+    style = list(
+      cell_fill("#2C3E50"),
+      cell_text(color = "white", weight = "bold")
+      ),
+    locations = cells_row_groups(3))
+
+
+```
+
+
+
+# Summary of Findings  
+
+The goal of this analysis was to determine which factors contribute to lower restaurant inspection scores. Most importantly, we wanted to use our findings to provide restaurant owners with the ability to quickly understand which violation codes to avoid, enabling them to better prepare for inspections.
+
+__Let's review our findings:__
+
+
+- As expected, more violations do lead to lower scores (on average), but relationship is non-linear due to demerit ranges
+- Higher demerits are typically found in __repeat violations__
+- Lower scores had much higher proportions for demerits greater than 1.5, indicating that demerit amounts per violation play a key role in final inspection scores
+- Some violation descriptions were more associated with higher demerits
+- Low scores included words about __preparation and storage of food__, __handwashing__, and __cleanliness__ ,etc.
+- Low scores included phrases about __hand washing__, __walk in coolers__, __TCS food items__, and several others as seen in the word cloud produced by the model
+  
+
+Lastly, we combined prior results obtained to identify specific critical violation codes and sub codes contributing to higher demerits. We found that:
+
+Three chapters have critical codes / subcodes, which should be prioritized
+
+- __Chapter 2 Management and Personnel__
+  - Procedures for cleaning, washing hands and presence of a food protection manager
+ 
+- __Chapter 3 Food__
+  - procedures for cooling, use of gloves, and preparation / safety of food
+ 
+- __Chapter 4 Equipment, Utensils and Linens__
+  - Proper cleaning of contact surfaces and utensils
+
+
+
+_The final reference table serves as a one-stop-shop for swift inspection readiness and allows restaurants to focus on complying with the most critical codes in North Carolina's Code Manual_
+
+
+
+# Final Recommendations
+
+When preparing for a sanitation inspection, follow these steps:
+
+1. Ensure __handwashing standards__ are in place and well understood by all employees. All violations with 4 demerits included references to handwashing. _See Appendix A_ for specific guidance on handwashing procedures
+2. Vefify that a __Certified Food Protection Manager__ is on site for the inspection. Typically, absent CFPMs result in an automatic 2 point demerit
+3. Make __food storage and preparation__ a top priority. Most 3 point violations are related to food: separation, date marking, and proper cold holding temperatures
+4. Always avoid __repeat violations__. Repeat violations (especially those found in the reference table) can lead to extremely poor scores
+5. Use the __final reference table__ from this analysis to prioritize readiness efforts
+
+
+
+# Appendix
+
+
+
+## Appendix A: Additional Reference Material
+
+
+### Appendix A.1 Hand Washing Procedures
+
+
+__Bare Hand Contact with Ready-To-Eat Foods__
+
+The following is an excerpt from the FDA's "Employee Health Personal Hygiene Handbook"
+When hands are heavily contaminated, effective hand washing practices may not be enough to prevent the transmission of transient pathogens from the hands to RTE foods. The 2009 FDA Food Code does not allow bare hand contact with RTE food (i.e., food that is eaten without further washing or cooking) and requires the use of suitable utensils such as scoops, spoons, forks, spatulas, tongs, deli tissue, single-use gloves, or dispensing equipment when handling these food items.
+Bare hand contact with RTE foods, such as sandwiches or salads, can result in contamination of food and contribute to foodborne illness outbreaks. Therefore, food employees should always use suitable utensils such as spatulas, tongs, single-use gloves, or dispensing equipment when handling RTE foods. Single-use gloves used along with hand washing can be an effective barrier to decrease the transfer of microorganisms from the hand to food. However, gloves are not total barriers to microbial transmission, and will not be an effective barrier alone for food workers without education on proper glove use and hand washing requirements.
+Follow these instructions for the use of single-use gloves:
+
+- Always wash hands before donning gloves
+- Change disposable gloves between handling raw products and RTE products
+- Do not wash or reuse disposable gloves
+- Discard torn or damaged disposable gloves
+- Cover an infected lesion (cut, burn, or boil) with pus with a waterproof covering and disposable glove
+- Wear disposable gloves over artificial nails, nail polish, or unclean orthopedic support devices
+
+__Hand Washing Procedures__
+
+Use the following cleaning method in the order stated to clean your hands and exposed portions of your arms:
+
+1. Rinse your hands under clean, running warm water at a temperature of at least 100 degrees Fahrenheit
+2. Apply liquid soap
+3. Rub hands together vigorously for at least 15 seconds while:  Paying particular attention to removing soil from underneath the fingernails during the cleaning procedure, and creating friction on the surfaces of the hands and arms, fingertips, and areas between the fingers
+4. Thoroughly rinse under clean, running warm water for 10 seconds
+5. Immediately follow the cleaning procedure with thorough drying using a disposable paper towel or other hand drying device
+6. Turn off faucet with a disposable paper towel or by other means so that bare hands do not touch faucet
+
+
+### Appendix A.2 TF-IDF Formula
+
+__Formula for TF-IDF__
+
+The formula that is used to compute the tf-idf for a term t of a document d in a document set is:
+
+__tf-idf(t, d) = tf(t, d) * idf(t), and the idf is computed as idf(t) = log [ n / df(t) ] + 1__  
+
+
+
+### Appendix A.3 Plots
+
+__Geographical Plot__
+
+Some areas seem more likely to have lower minimum inspection scores, but patterns are a bit random. 
+
+```{r tables1}
+
+print(P3)
+
+
+```
+
+
+__Inspector IDs__ 
+
+
+Some inspectors do seem to grade a bit more harshly than others, but only a few are statistically significant.
+
+
+```{r tables}
+
+print(P5)
+
+
+```
+
+
+__NLP Plot__
+
+Words most used in inspector comments - a precursor for TF-IDF
+
+
+```{r G3, out.width= "100%",message=FALSE, warning=FALSE,results='hide'}
+
+png(file="P6.png",width=2200,height=1500,res=300)
+P6
+dev.off()
+
+```
+
+
+```{r G4 ex2, out.width= "100%",message=FALSE, warning=FALSE}
+
+knitr::include_graphics("P6.png")
+
+
+```
+
+
+
+## Appendix B: Data Extraction Process
+
+
+
+```{r G7 ex3, out.width= "100%",message=FALSE, warning=FALSE}
+
+
+knitr::include_graphics("capture1.PNG")
+
+
+knitr::include_graphics("data_extraction.png")
+
+
+
+```
+
+
+## Appendix C: Full Code Base
+
+
+```{r Full code base,include = TRUE, echo=TRUE,results='hide', eval=FALSE}
+#### Load applicable libraries ----
+
+library(tidyverse)
+library(tidyr)
+library(tm)
+library(tidygraph)
+library(tidytext)
+library(tidyquant)
+library(skimr)
+library(DataExplorer)
+library(rvest)
+library(readr)
+library(janitor)
+library(stringr)
+library(readxl)
+library(pdftools)
+library(tidygeocoder)
+library(tmap)
+library(tmaptools)
+library(viridis)
+library(sf)
+library(leaflet)
+library(maps)
+library(mapview)
+library(leafpop)
+library(RColorBrewer)
+library(psych)
+library(qwraps2)
+library(knitr)
+library(gtsummary)
+library(htmltools)
+library(recipes)
+library(text )
+library(textrecipes)
+library(SnowballC)
+library(udpipe)
+library(textrank)
+library(wordcloud)
+library(wordcloud2)
+library(reshape2)
+library(tm)
+library(ggwordcloud)
+library(broom)
+library(ggrepel)
+library(RColorBrewer)
+library(gplots)
+
+
+#### Set options
+
+options(qwraps2_markup = "markdown")
+options(scipen = 999)
+
+
+#### Extract and import rules governing North Carolina sanitation inspections
+
+violation_codes <- read_excel("clt_sanitation_codes.xlsx",sheet = "Sheet3", col_names = TRUE, trim_ws = TRUE) %>% clean_names()
+
+
+#### Extract raw data ----
+
+restaurants <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 1, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+inspections <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 2, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+violations <- read_excel("Source_Files/restaurants_consolidated.xlsx",sheet = 3, col_names = TRUE, trim_ws = TRUE) %>% clean_names() %>% select(-1)
+
+#### Create a data dictionary ----
+
+restaurant_colNames <- list(colnames(restaurants))
+inspection_colnames <- list(colnames(inspections))
+violation_colnames <- list(colnames(violations))
+violation_codes_colnames <- list(colnames(violation_codes))
+
+#### Identify data quality issues ----
+
+DataExplorer::plot_missing(restaurants)
+DataExplorer::plot_missing(inspections)
+DataExplorer::plot_missing(violations)
+DataExplorer::plot_missing(violation_codes)
+
+#### more general statistics explorations for outliers and incorrect values
+
+restaurants %>% skimr::skim()
+inspections %>% skimr::skim()
+violations %>% skimr::skim()
+
+
+
+#### Identify initial data quality issues
+
+violations <- violations %>%
+    mutate(demerits = ifelse(is.na(demerits), 0, demerits))
+
+restaurants <- restaurants %>%
+    filter(state == 'NC')
+
+#### Explore unique identifier performance by RPA bot
+#### We notice that there are some violation tables that did not render. Restaurants with inspection scores < 100 should always have at least 1 violation.
+#### For our final restaurant list, we'll only we'll only include restaurants with final inspection scores of 100 that TRULY don't have violations
+
+
+restaurants_no_violations <- restaurants %>%
+    inner_join((inspections %>% filter(inspection_score == 100))) %>%
+    anti_join(violations) %>% distinct(est_id, name, address, city, state, zip)
+
+
+
+violations_undocumented <- inspections %>%
+    filter(inspection_score < 100) %>%
+    anti_join(violations, by= c('est_id', 'inspection_id')) %>%
+    count(est_id, sort = TRUE) %>%
+    inner_join(restaurants)
+
+restaurants_final <- restaurants %>%
+    semi_join(inspections) %>%
+    semi_join(violations) %>%
+    rbind(restaurants_no_violations) %>%
+    anti_join(violations_undocumented) %>%
+    distinct(.)
+
+
+#### Build a map ----
+#### Map our data by first converting restaurant addresses to latitude and longitude points
+
+
+doParallel::registerDoParallel()
+
+
+locations <- restaurants %>%
+    semi_join(inspections) %>%
+    mutate(address = str_glue('{address}',",")) %>%
+    mutate(city = str_glue('{city}',",")) %>%
+    mutate(full_address = str_c(address,city,state,zip,sep = " ")) %>%
+    select(est_id, name, full_address) %>%
+    geocode(full_address, method = 'osm', lat = latitude , long = longitude) %>%
+    na.omit()
+
+#save the locations file
+
+
+saveRDS(locations, file="locations.Rda")
+
+
+
+        
+
+#### Plot the restaurants with minimum inspection ratings
+
+min_inspection_ratings <- inspections %>%
+    group_by(est_id) %>%
+    summarize(min_score = min(inspection_score))
+
+
+
+
+map <- mapview(
+    (locations %>% inner_join(min_inspection_ratings)),
+    xcol = "longitude",
+    ycol = "latitude",
+    crs = 4269,
+    grid = FALSE,
+    zcol = "min_score",
+    layer.name = "Minimum Inspection Scores",
+    label = "name",
+    map.types = "CartoDB.DarkMatter")
+
+#### Construct summary statistic tables ----
+
+
+set.seed(123)
+
+
+T1 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    mutate(year = as.character(year)) %>%
+    select(inspection_grade,year) %>%
+    tbl_summary(by = year, label = inspection_grade ~ "Inspection Grade") %>%
+    modify_caption("Inspection Grades by Year") %>%
+    bold_labels()
+
+
+
+T2 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    select(inspection_grade,month) %>%
+    tbl_summary(by = month, label = inspection_grade ~ "Inspection Grade") %>%
+    modify_caption("Inspection Grades by Month") %>%
+    bold_labels()
+
+
+T3 <- inspections %>%
+    inner_join(restaurants %>% select(est_id, name)) %>%
+    mutate(year = lubridate::year(inspection_date),
+           month = lubridate:: month(inspection_date,label = TRUE, abbr = TRUE)) %>%
+    filter(year > 2017) %>%
+    select(inspection_score) %>%
+    tbl_summary(
+        
+        type = all_continuous() ~ "continuous2",
+        statistic = all_continuous() ~ c("{N_nonmiss}",
+                                         "{mean} ({sd})",
+                                         "{median} ({p25}, {p75})",
+                                         "{min}, {max}"),
+        missing = "no"
+    ) %>%
+    italicize_levels() %>%
+    modify_caption("Inspection Scores") %>%
+    bold_labels()
+
+T4 <- violations %>% select(violation_item,demerits,corrected_during_inspection,repeat_violation,verification_required) %>%
+    mutate(violation_item = as.factor(violation_item)) %>%
+    tbl_summary() %>%
+    modify_caption("Descriptive Statistics for Violations") %>%
+    bold_labels()
+
+#### Exploratory data analysis ----
+#### Let's do some exploratory analysis and create more visualizations (EDA)
+
+#### Violation counts are related to scores
+
+P1 <- violations %>%
+    select(-est_id) %>%
+    inner_join((inspections %>% select(-est_id))) %>%
+    group_by(inspection_id) %>%
+    summarise(score = mean(inspection_score),
+              violation_count = n()) %>%
+    ggplot(aes(violation_count, score)) +
+    geom_jitter(alpha = .2, color = "grey50") +
+    geom_smooth(size = 1.5, colour = "#2c3e50") +
+    theme_minimal() +
+    labs(title = "Number of violations compared to inspections scores",
+         subtitle = "As expected, we see a strong negative correlation: restaurants with more violations have lower inspection scores",
+         x = "violation count")
+
+#### We know that scores are a direct function of demerits, so let's see if response types have an impact
+
+
+P2<- violations %>%
+    select(demerits,corrected_during_inspection,repeat_violation,verification_required) %>%
+    pivot_longer(corrected_during_inspection:verification_required) %>%
+    mutate(name = str_replace_all(name,"_"," ") %>% str_to_title()) %>%
+    mutate_if(is.character,factor) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    ggplot(aes(demerits, fill = value)) +
+    geom_bar(position = "fill", alpha = .9) +
+    scale_fill_manual(values = c("grey80","#2c3e50")) +
+    scale_y_continuous(labels = scales::percent,
+                       n.breaks = 3,expand = c(.02,.02)) +
+    
+    coord_flip() +
+    theme_minimal() +
+    theme(strip.text.x = element_text(size = 10,face = "bold"),
+          axis.text.y = element_text(size = 12),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.position = c(.04,.9999),legend.direction = "horizontal")+
+    
+    guides(fill = guide_legend(reverse = TRUE)) +
+    facet_wrap(~name, scales = "free_x") +
+    labs(title = "Violations with higher demerits typically are REPEAT VIOLATIONS and must be CORRECTED DURING INSPECTION",
+         subtitle = "Demerits represent the number of points deducted from inspection scores",
+         x = NULL,
+         y = NULL,
+         fill = NULL)
+
+
+
+#### Does location impact restaurant inspection scores?
+
+P3 <- locations %>%
+    inner_join(min_inspection_ratings) %>%
+    ggplot(aes(longitude, latitude, z = min_score)) +
+    stat_summary_hex(color = "grey", alpha = .8, bins = 15) +
+    scale_color_tq() +
+    labs(fill = "Avg. Minimum Score") +
+    theme_minimal() +
+    coord_fixed() +
+    labs(title = "Average minimum inspection scores: longitude vs latitude",
+         subtitle = "There could possibly be some areas within Charlotte, NC where restaurants typically receive lower sanitation scores")
+
+
+
+#### Let's take a look at violation items to see if there are differences in avg demerits per violation
+
+P4 <- violations %>%
+    arrange(violation_item) %>%
+    mutate(number = as.character(violation_item)) %>%
+    ggplot(aes(factor(violation_item,ordered = TRUE), demerits, color = "identity")) +
+    geom_jitter(width = .2, alpha= .1) +
+    coord_flip()+
+    scale_color_tq() +
+    theme_minimal() +
+    theme(legend.position = "none") +
+    labs(title = "Demerits by violation item",
+         subtitle = "items x are the largest",
+         x = "Violation Item")
+
+
+#### Do certain inspectors grade more harshly than others
+
+top_inspectors <- inspections %>%
+    group_by(inspector_id) %>%
+    summarize(avg_ins_rating = mean(inspection_score),
+              count = n()) %>%
+    ungroup() %>%
+    slice_max(order_by = count,n = 30) %>%
+    arrange(avg_ins_rating) %>% pull(inspector_id)
+
+#### plot the inspector IDs and rank by median rating
+
+P5 <- inspections %>%
+    filter(inspector_id %in% top_inspectors) %>%
+    mutate(inspector_id = as.factor(inspector_id)) %>%
+    ggplot(aes(fct_reorder(inspector_id,inspection_score,.desc = FALSE), inspection_score)) +
+    coord_flip() +
+    scale_x_discrete()+
+    geom_boxplot(fill = "#2c3e50", alpha = .6) +
+    labs(y = NULL,
+         x = "Inspector ID",
+         title = "Inspectors ranked by median sanitation score",
+         subtitle = "The top 30 Inspectors (most inspections performed) ranked by median score provided to restaurants ") +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+
+#### Data wrangling ----
+
+#### Now that we have some generic plots, let's do some data wrangling
+
+#### For violations, we'd like to separate the inspector comments from violation numbers AND only use "observations" from the inspectors
+
+pattern_num <- "(\\d+)-(\\d+).(\\d+)"
+pattern_obs <- "(observed|Observed).+"
+
+
+#### final violations table used for NLP analysis
+violations_NLP <- violations %>%
+    mutate(violation_number = str_extract(inspector_comments,pattern = pattern_num) %>% str_trim(),
+           observations = str_extract(inspector_comments,pattern = pattern_obs) %>% str_trim() %>% str_remove_all("(observed|Observed|-P)")) %>%
+    filter(!is.na(violation_number)) %>%
+    filter(!is.na(observations)) %>% select(-inspector_comments)
+
+
+#### NLP ----
+
+words_cleaned <- violations_NLP %>%
+    unnest_tokens(word, observations) %>%
+    anti_join(stop_words) %>%
+    mutate(word = str_extract(word, "[a-z']+")) %>%
+    filter(!is.na(word)) %>%
+    # remove abbreviations and
+    filter(str_length(word) > 3) %>%
+    # remove punctuation
+    mutate(word = str_remove_all(word, pattern = "[[:punct:]]"))
+
+
+#### make a quick plot of frequent words in observations
+P6 <- words_cleaned %>%
+    count(word, sort = TRUE) %>%
+    slice_max(n = 20, order_by = n) %>%
+    mutate(word = reorder(word,n)) %>%
+    ggplot(aes(n, word)) +
+    geom_col(fill = "grey80") +
+    theme_minimal() +
+    scale_x_continuous(expand = c(.01,0),labels = scales::comma) +
+    theme(strip.text.x = element_text(size = 10),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    labs(x = "Count",
+         y = NULL,
+         title = "Most frequently used words in violation reports")
+
+#### Let's jump right into TF-IDF to determine words specific to each categories
+
+### split by very high scores and very low scores
+set.seed(123)
+
+P7 <- words_cleaned %>%
+    inner_join(inspections) %>%
+    mutate(performance = case_when(inspection_score > 99 ~ "very high",
+                                   inspection_score > 84 ~ "mediocre",
+                                   TRUE ~ "very low")) %>%
+    filter(performance != "mediocre") %>%
+    count(performance, word, sort = TRUE) %>%
+    ungroup() %>%
+    bind_tf_idf(word,performance, n) %>%
+    arrange(-tf_idf) %>%
+    group_by(performance) %>% mutate(performance = factor(performance)) %>%
+    slice_max(n = 20,with_ties = FALSE, order_by = tf_idf) %>%
+    mutate(word = factor(word, levels = rev(unique(word)))) %>%
+    ggplot(aes(word,tf_idf, fill = performance)) +
+    geom_col(alpha = .8,show.legend = FALSE) +
+    scale_fill_tq() +
+    labs(title = "Words most associated with very high scores vs. very low scores",
+         subtitle = "The below chart shows the top 15 words associated with very high inspection scores vs. very low inspections scores using tf-idf",
+         x = NULL,
+         y = "tf-idf") +
+    facet_wrap(~performance, scales = "free") +
+    coord_flip() +
+    theme_minimal()  +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+#### Text rank model using Google's Page Rank algorithm to summarize violation observations - this will be used later
+
+ud_model <- udpipe_download_model(language = "english")
+ud_model <- udpipe_load_model(ud_model$file_model)
+
+#### filter by violations that have demerits > 2, since inspection scores are a direct function of demerits given
+# high_demerits <- violations_NLP %>%
+#     filter(demerits > 2) %>%
+#     mutate(observations = str_to_lower(observations))
+# 
+# 
+# low_demerits <- violations_NLP %>%
+#     filter(demerits == 0) %>%
+#     sample_n(size = 2000) %>%
+#     mutate(observations = str_to_lower(observations))
+# 
+# #### run model for high demerits: 3 or 4
+# 
+# x <- udpipe_annotate(ud_model, x = high_demerits$observations)
+# x <- as.data.frame(x)
+# 
+# stats <- textrank_keywords(x$lemma,
+#                            relevant = x$upos %in% c("NOUN", "ADJ"),
+#                            ngram_max = 8, sep = " ")
+# 
+# stats <- subset(stats$keywords, ngram > 1 & freq >= 20)
+# 
+# stats <- stats %>%
+#     slice_max(n=100,order_by = freq) %>% select(-ngram)
+# 
+# #### run model for low demerits
+# 
+# y <- udpipe_annotate(ud_model, x = low_demerits$observations)
+# y <- as.data.frame(y)
+# 
+# stats2 <- textrank_keywords(y$lemma,
+#                             relevant = y$upos %in% c("NOUN", "ADJ"),
+#                             ngram_max = 8, sep = " ")
+# 
+# stats2 <- subset(stats2$keywords, ngram > 1 & freq >= 10)
+# 
+# stats2 <- stats2 %>%
+#     slice_max(n=100,order_by = freq) %>% select(-ngram)
+# 
+# comparison <- stats %>% mutate(demerits = "High") %>%
+#     rbind(stats2 %>% mutate(demerits = "Low"))
+
+
+set.seed(123)
+
+
+#### determine feature significance and direction. For restaurants that had matching violation IDs and score < 90, none had a max violation below 1.5 demerits
+inspections %>%
+    filter(inspection_score < 90) %>%
+    inner_join(violations, by = c("inspection_id" = "inspection_id")) %>%
+    group_by(inspection_id) %>%
+    summarize(max_demerits = max(demerits)) %>%
+    arrange(-max_demerits) %>% view()
+
+#### predictive modeling
+
+
+sample <- violations %>%
+    inner_join(locations) %>%
+    select(corrected_during_inspection,verification_required,repeat_violation,violation_item, demerits, latitude,longitude) %>%
+    mutate_if(is.character,factor)
+
+### quick linear model to determine feature inclusion outside text and
+
+linear_model <- lm(demerits ~.,data = sample)
+
+summary(linear_model)
+
+#### Out of the 8 categories, food has most violations
+
+violations_model_df <- violations_NLP %>%
+    mutate(violation_number = str_sub(violation_number,1,5)) %>%
+    inner_join(violation_codes,by = c("violation_number" = "code_subtitle"))
+
+
+
+P9 <- violations_model_df %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    count(chapter_description,demerits,sort = TRUE) %>%
+    ungroup() %>%
+    mutate(chapter_description = reorder(chapter_description,n)) %>%
+    ggplot(aes(chapter_description, n, fill = demerits)) +
+    scale_fill_tq() +
+    geom_col() +
+    theme_minimal() +
+    coord_flip()
+
+
+
+violations_model_df %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    filter(demerits == '4') %>%
+    count(chapter_description,demerits)
+
+P10 <- violations_model_df %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    count(sub_chapter_description,demerits,sort = TRUE) %>%
+    ungroup() %>%
+    mutate(sub_chapter_description = reorder(sub_chapter_description,n)) %>%
+    ggplot(aes(sub_chapter_description, n, fill = demerits)) +
+    scale_fill_tq() +
+    geom_col() +
+    theme_minimal() +
+    coord_flip()
+
+
+#### for cluster analysis, we'll only include count of violations 4 or greater
+lowcounts <- violations %>%
+    group_by(inspection_id) %>%
+    count(inspection_id) %>% filter(n <4)
+
+
+
+
+#### Clean up the description data
+
+
+
+#### dummy table for additional features
+dummy_table <- violations_model_df %>%
+    transmute(inspection_id,repeat_violation = ifelse(repeat_violation == 'Yes',1,0),
+              corrected_during_inspection = ifelse(corrected_during_inspection == 'Yes',1,0),
+              verification_required = ifelse(verification_required == 'Yes',1,0),
+              demerit_0 = ifelse(demerits == 0, 1,0),
+              demerit_.5 = ifelse(demerits == 0.5, 1,0),
+              demerit_1 = ifelse(demerits == 1, 1,0),
+              demerit_1.5 = ifelse(demerits == 1.5, 1,0),
+              demerit_2 = ifelse(demerits == 2, 1,0),
+              demerit_3 = ifelse(demerits == 3, 1,0),
+              demerit_4 = ifelse(demerits == 4, 1,0)) %>%
+    group_by(inspection_id) %>%
+    mutate(count = n()) %>%
+    mutate(
+        across(c(2:10),
+               .fns = ~./count)) %>% ungroup() %>%
+    group_by(inspection_id) %>%
+    summarise_at(1:10,sum)
+#### we have to add one more catch in here for violations that have all repeats inflating the counts and remove low counts
+dummy_table <- dummy_table %>%
+    mutate(repeat_violation = ifelse(repeat_violation > 1, 1,repeat_violation)) %>%
+    anti_join(lowcounts)
+
+
+
+#### let's combine our dummy table with our kmeans table to get all features together
+
+
+
+ kmeans_tbl <- violations_model_df %>%
+mutate(violation_description = str_to_lower(violation_description)) %>%
+mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+# #
+# #
+# #
+# #   mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+# #   group_by(inspection_id) %>%
+# #   mutate(count = n()) %>%
+# #   ungroup() %>%
+# #   group_by(inspection_id, violation_description) %>%
+# #   summarize(perc = n()/ count) %>%
+# #   pivot_wider(names_from = violation_description, values_from = perc, values_fill = 0) %>%
+# #   inner_join(dummy_table) %>%
+# #   ungroup()
+# 
+# #
+# # ### perform k means clustering
+# #
+# # set.seed(123)
+# #
+# # kmeans_obj <- kmeans_tbl %>%
+# #   select(-inspection_id) %>%
+# #   kmeans(centers = 2, nstart = 25)
+# #
+# # tidy(kmeans_obj) %>% view()
+# #
+# # #### this was just a start, so let's see what the optimal number of groups should be with a skree plot
+# #
+# # kmeans_tbl2 <- kmeans_tbl %>% select(-inspection_id)
+# #
+# # set.seed(123)
+# #
+# # #### function to compute total within-cluster sum of square
+# # wss <- function(k) {
+# #   kmeans(kmeans_tbl2, k, nstart = 10 )$tot.withinss
+# # }
+# #
+# # #### Compute and plot wss for k = 1 to k = 15
+# # k.values <- 1:15
+# #
+# # #### extract wss for 2-15 clusters
+# # wss_values <- map_dbl(k.values, wss)
+# #
+# # plot(k.values, wss_values,
+# #      type="b", pch = 19, frame = FALSE,
+# #      xlab="Number of clusters K",
+# #      ylab="Total within-clusters sum of squares")
+# #
+# # ### as we can see, kmeans didn't work well with the sparse matrix and large variety. Let's describe by demerits
+
+
+
+### clean the violation description column
+
+violations_summary_tbl <- violations_model_df %>%
+    mutate(violation_description = str_to_lower(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+    mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,"nonfoodcontact","nonfood contact")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"raw or undercooked foods","raw undercooked foods")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"management and food employee knowledge and conditional employee responsibilities and reporting",
+                                                   "management food and conditional employee knowledge responsibilities and reporting")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"no bare hand contact with rte foods or pre approved alternate procedure properly followed",
+                                                   "no bare hand contact with rte foods or a preapproved alternate properly followed")) %>%
+    
+    
+    mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+    mutate(demerits = factor(as.character(demerits)))%>%
+    group_by(violation_description, demerits) %>%
+    summarise(n = n()) %>%
+    mutate(prop = n/ sum(n)) %>%
+    select(-prop) %>%
+    pivot_wider(names_from = demerits, values_from = n,values_fill = 0) %>%
+    ungroup() %>%
+    mutate("desc_total" = rowSums((.[,2:8]), na.rm = TRUE)) %>% filter(desc_total > 6) %>%
+    mutate("total" = sum(desc_total),
+           "total_perc" = desc_total / total) %>%
+    pivot_longer(2:8) %>%
+    mutate(desc_perc = value / desc_total)
+
+
+
+#### let's do some proportional analysis to see how two the groups differ
+
+
+P10 <- inspections %>%
+    inner_join(violations,by = c("inspection_id" = "inspection_id")) %>%
+    mutate(high_score = ifelse(inspection_score < 90, "score < 90", "score >= 90")) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    group_by(high_score, demerits) %>%
+    summarize(count = n()) %>%
+    mutate(perc = sum(count) / count) %>%
+    ggplot(aes(high_score,count, fill = demerits)) +
+    geom_col(position = "fill",alpha = .8) +
+    coord_flip() +
+    scale_fill_brewer(palette = 'Reds') +
+    scale_y_continuous(labels=scales::percent) +
+    #scale_x_continuous(labels=scales::percent) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    labs(title = "proportion of demerits between inspection scores greater than 90 vs scores less than 90",
+         subtitle = "Restaurants who received scores of less than 90 have a much higher proportion of larger demerits (2,3,4)",
+         x = NULL,
+         y = NULL,
+    )
+
+
+#### to dive in a bit deeper, let's take the top culprits for higher demerits (2,3,4) and highlight them
+
+high_demerit_culprits <- violations_summary_tbl %>% filter(name > 1.5) %>%
+    mutate(rank = total_perc * desc_perc) %>%
+    arrange(-rank) %>%
+    head(7) %>%
+    bind_rows(violations_summary_tbl %>% filter(violation_description == "hands clean and properly washed" & name == 4 ))
+
+low_demerit_culptrits <- violations_summary_tbl %>% filter(name > 1.5) %>%
+    filter(!violation_description %in% high_demerit_culprits$violation_description) %>%
+    filter(name %in% c(2,3,4)) %>%
+    filter(desc_perc > 0.04)
+
+
+#### plot the results and highlight top 10 culprits
+
+
+P11 <- violations_summary_tbl %>%
+    filter(name %in% c(2,3,4)) %>%
+    filter(desc_perc > 0.04) %>%
+    ggplot(aes(total_perc, desc_perc, shape = name, color = "gray80")) +
+    geom_point(data=low_demerit_culptrits,
+               aes(x=total_perc,y=desc_perc),
+               color= "gray80",
+               size = 1.5,alpha = .95, size = 2) +
+    geom_point(data=high_demerit_culprits,
+               aes(x=total_perc,y=desc_perc),
+               color= "indianred",
+               size = 3) +
+    geom_text_repel(data = low_demerit_culptrits,
+                    aes(label = violation_description),
+                    color = "gray80",
+                    size = 2.5,alpha = .95) +
+    geom_text_repel(data=high_demerit_culprits,
+                    aes(label = violation_description),nudge_y = -.015,
+                    size = 3.5,
+                    color= "indianred") +
+    
+    scale_color_tq() +
+    scale_y_continuous(limits = c(0,1),labels=scales::percent) +
+    scale_x_continuous(limits = c(0, .08),labels=scales::percent) +
+    labs(title = "Which violation descriptions account for high demerits?",
+         subtitle = "Violation descriptions: proportion of total violation descriptions X proportion of violation descriptions by demerit type",
+         x = "proportion of total violation descriptions",
+         y = "proportion of demerit types",
+         shape  = "demerits",
+         color = NULL) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+
+
+
+
+
+
+
+#### check out specific violations and plot them
+
+violations_subcode_tbl <- violations_model_df %>%
+    mutate(violation_description = str_to_lower(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+    mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,"nonfoodcontact","nonfood contact")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"raw or undercooked foods","raw undercooked foods")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"management and food employee knowledge and conditional employee responsibilities and reporting",
+                                                   "management food and conditional employee knowledge responsibilities and reporting")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"no bare hand contact with rte foods or pre approved alternate procedure properly followed",
+                                                   "no bare hand contact with rte foods or a preapproved alternate properly followed")) %>%
+    
+    
+    mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    filter(violation_description %in% high_demerit_culprits$violation_description) %>%
+    mutate(demerits = case_when(demerits == '4'~ 4,
+                                demerits == '3'~ 3,
+                                demerits == '2'~ 2,
+                                demerits == '1'~ 1,
+                                demerits == '1.5'~ 1.5,
+                                demerits == '.5'~ .5,
+                                TRUE ~ 0)) %>%
+    group_by(chapter_description, violation_number) %>%
+    summarise(n = n(),
+              mean = round(mean(demerits),2),
+              sdev = sd(demerits),
+              lower = mean - (1*sdev),
+              upper = mean +(1*sdev)) %>%
+    filter(n > 50) %>%
+    filter(mean > .7)
+
+P12 <- violations_subcode_tbl %>%
+    ggplot(aes(reorder(violation_number,mean),mean, color = chapter_description, ymin = lower, ymax = upper)) +
+    geom_pointrange(size = 1,alpha = .8) + coord_flip() +
+    labs(x = "violation sub code", y = "Average Demerits",
+         color = "Chapter Description") +
+    geom_hline(yintercept = 1,linetype = 2,size = 1.2, color = "gray80") +
+    geom_text(aes(label = str_glue("N: {scales::comma(n)}
+                                 Avg: {mean}")), size = 2.5,nudge_x = .28, nudge_y = .18) +
+    theme_minimal() +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    scale_color_tq() +
+    labs(title = "Which violation sub-codes typically have the highest demerits?",
+         subtitle = "Top 10 critical violation codes: PRIORITIZE for inspection readiness")
+
+#### let's make one last word cloud for each of these categories
+
+
+final_demerits_wc <- violations_model_df %>%
+    mutate(violation_description = str_to_lower(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,pattern = "&",replacement = "and")) %>%
+    mutate(violation_description = tm::removePunctuation(violation_description)) %>%
+    mutate(violation_description = str_replace_all(violation_description,"nonfoodcontact","nonfood contact")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"raw or undercooked foods","raw undercooked foods")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"management and food employee knowledge and conditional employee responsibilities and reporting",
+                                                   "management food and conditional employee knowledge responsibilities and reporting")) %>%
+    mutate(violation_description = str_replace_all(violation_description,"no bare hand contact with rte foods or pre approved alternate procedure properly followed",
+                                                   "no bare hand contact with rte foods or a preapproved alternate properly followed")) %>%
+    
+    
+    mutate(violation_description = str_replace_all(violation_description,pattern = ",",replacement = "")) %>%
+    mutate(demerits = factor(as.character(demerits))) %>%
+    filter(violation_description %in% high_demerit_culprits$violation_description) %>%
+    filter(demerits %in% c(2,3,4))
+
+
+#### run model for high demerits: 2,3 or 4
+
+z <- udpipe_annotate(ud_model, x = final_demerits_wc$observations)
+z <- as.data.frame(z)
+
+stats3 <- textrank_keywords(z$lemma,
+                            relevant = z$upos %in% c("NOUN", "ADJ"),
+                            ngram_max = 8, sep = " ")
+
+stats3 <- subset(stats3$keywords, ngram > 1 & freq >= 10)
+
+stats3 <- stats3 %>%
+    top_n(100) %>% select(-ngram) %>%
+    filter(!keyword %in% c("could hold","walk in","reach in","food in","could hold","don glove","item in")) %>%
+    mutate(keyword = ifelse(str_detect(str_to_lower(keyword),"tc"),"TCS Food Item",keyword)) %>%
+    group_by(keyword) %>%
+    summarize(freq = sum(freq)) %>%
+    arrange(-freq)
+
+#### save the final model
+
+#saveRDS(stats3, file="google_model_df.Rda")
+
+
+#### plot in final word cloud
+
+set.seed(123)
+
+P13 <- ggplot(stats3,
+             aes(label = keyword,
+                 size = freq)) +
+    geom_text_wordcloud_area(color = "indianred") +
+    scale_size_area(max_size = 40) +
+    theme_minimal()
+
+#### now that we know which specific violations represent the highest demerits, let's bring in the reference table
+
+severe_violations_tbl_reference <- violation_codes %>%
+    filter(code_subtitle %in% violations_subcode_tbl$violation_number)
+
+specific_violations <- violations%>%
+    mutate(long_number = str_extract(inspector_comments,pattern = pattern_num) %>% str_trim()) %>%
+    mutate(short_number = str_sub(long_number,1,5)) %>%
+    filter(short_number %in% severe_violations_tbl_reference$code_subtitle) %>%
+    group_by(short_number,long_number) %>%
+    summarize(n = n(),
+              mean = mean(demerits)) %>%
+    arrange(-mean) %>%
+    filter(n >= 50) %>% filter(mean >1) %>%
+    arrange(short_number,long_number)
+
+final_reference_tbl <- severe_violations_tbl_reference %>%
+    inner_join(specific_violations, by = c("code_subtitle" ="short_number")) %>% select(-n) %>% select(-mean) %>%
+    head(12)
+
+
+#### find the sub code descriptions and bind to reference table
+
+subcode_desc <- tibble(subcode_descripton =
+                           c("ASSIGNMENT", "DEMONSTRATION", "CERTIFIED FOOD PROTECTION MANAGER",
+                             "CLEANING PROCEDURE", "WHEN TO WASH","PACKAGED AND UNPACKAGED FOOD",
+                             "GLOVES - USE LIMITATION","COOLING","TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD",
+                             "READY TO EAT TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD: DATE MARKING",
+                             "READY TO EAT TIME AND TEMPERATURE CONTROL FOR SAFETY FOOD: DISPOSITION",
+                             "EQUIPMENT, FOOD CONTACT SURFACES, NONFOOD CONTACT, AND UTENSILS"))
+
+
+final_reference_tbl <- final_reference_tbl %>%
+    rename("subcode" = long_number) %>%
+    bind_cols(subcode_desc) %>%
+    mutate(sub_chapter = ifelse(str_detect(sub_chapter,'4-5'),'4-6',sub_chapter)) %>%
+    mutate(sub_chapter_description = ifelse(str_detect(sub_chapter_description,'MAINTENANCE AND OPERATION'),'CLEANING OF EQUIPMENT AND UTENSILS',sub_chapter_description))%>%
+    mutate(code_subtitle = ifelse(str_detect(code_subtitle,'4-501'),'4-601',code_subtitle)) %>%
+    mutate(code_description = ifelse(str_detect(code_description,'EQUIPMENT'),'OBJECTIVE',code_description)) %>%
+    mutate(subcode = ifelse(str_detect(subcode,'4-501.112'),'4-601.11',subcode))
+
+
+
+```
+
+
+
